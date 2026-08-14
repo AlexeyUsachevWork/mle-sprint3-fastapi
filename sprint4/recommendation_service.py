@@ -18,7 +18,7 @@ async def lifespan(app: FastAPI):
 
     rec_store.load(
         "personal",
-        "final_recommendations.parquet",
+        "final_recommendations_feat.parquet",
         columns=["user_id", "item_id", "rank"],
     )
     rec_store.load(
