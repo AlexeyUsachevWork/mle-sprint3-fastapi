@@ -1,0 +1,101 @@
+# Продуктивизация: API + Prometheus + Grafana.
+# Модель, features store и конфиги — bind-mount с хоста (внешние каталоги).
+#
+# Переменные (опционально в .env / .env.local):
+#   HOST_MODELS_DIR=./models
+#   HOST_SERVING_DATA_DIR=./data/serving
+#   HOST_CONFIGS_DIR=./configs
+#   HOST_MONITORING_DIR=./monitoring
+#   GRAFANA_USER=admin
+#   GRAFANA_PASSWORD=admin
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bank-rec-api
+    environment:
+      MODEL_PATH: /app/models/model.bin
+      FEATURES_PATH: /app/data/serving/clients_features.parquet
+      SERVICE_CONFIG: /app/configs/service.yaml
+      TOP_K: "7"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ${HOST_MODELS_DIR:-./models}:/app/models:ro
+      - ${HOST_SERVING_DATA_DIR:-./data/serving}:/app/data/serving:ro
+      - ${HOST_CONFIGS_DIR:-./configs}:/app/configs:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - bank-rec
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: bank-rec-prometheus
+    volumes:
+      - ${HOST_MONITORING_DIR:-./monitoring}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - bank-rec
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: bank-rec-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ${HOST_MONITORING_DIR:-./monitoring}/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${HOST_MONITORING_DIR:-./monitoring}/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - bank-rec
+    restart: unless-stopped
+
+  # Опционально: локальный MLflow (SQLite). Для курса обычно scripts/start_mlflow.sh
+  mlflow:
+    profiles: ["mlflow"]
+    image: ghcr.io/mlflow/mlflow:v2.14.1
+    container_name: bank-rec-mlflow
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - ${HOST_MLFLOW_DIR:-./.mlflow_docker}:/mlflow
+    networks:
+      - bank-rec
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  bank-rec:
+    driver: bridge

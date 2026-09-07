@@ -1,0 +1,7 @@
+# Настройки API-сервиса
+host: 0.0.0.0
+port: 8000
+model_path: models/model.bin
+features_path: data/serving/clients_features.parquet
+top_k: 7
+random_seed: 42

@@ -1,0 +1,51 @@
+# Параметры обучения и экспериментов
+random_seed: 42
+
+data:
+  raw_path: data/raw/train_ver2.csv
+  processed_dir: data/processed
+  target_prefix: ind_
+  target_suffix: _ult1
+  chunksize: 400000
+  # Сэмпл клиентов на месяц (память/время). 0 = без лимита.
+  # Было 60k/80k; эксперимент: ×5/3 → 100k / ~133k
+  clients_per_month_train: 100000
+  clients_per_month_valid: 133333
+
+split:
+  train_end: "2015-12-28"
+  valid_end: "2016-04-28"
+
+features:
+  # Эксп. 3 (lags 1,2): MAP@7 чуть хуже v1 → выключено; код в build.py сохранён
+  portfolio_lags: []
+
+model:
+  type: lightgbm
+  params:
+    # потолок деревьев; фактическое число режет early stopping
+    n_estimators: 300
+    learning_rate: 0.05
+    num_leaves: 63
+    subsample: 0.8
+    colsample_bytree: 0.8
+  top_k: 7
+  use_scale_pos_weight: false
+  scale_pos_weight_mode: sqrt
+  scale_pos_weight_cap: 50
+  min_positives_train: 100
+  # Early stopping (007): holdout=последний месяц train → MAP@7 +0.5% к v6 → оставляем
+  early_stopping:
+    enabled: true
+    holdout_months: 1
+    patience: 20
+
+mlflow:
+  experiment_name: bank-product-recommender
+  tracking_uri: http://127.0.0.1:5000
+  eda_run_name: bank-rec-eda-001
+  train_run_name: bank-rec-train-007-early-stopping
+
+paths:
+  model_path: models/model.bin
+  metrics_path: models/metrics.json

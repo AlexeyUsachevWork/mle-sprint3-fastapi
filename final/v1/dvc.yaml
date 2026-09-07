@@ -1,0 +1,36 @@
+# Стадии будут заполнены по мере реализации пайплайна обучения.
+# Пример потока: prepare -> features -> train -> evaluate
+
+stages:
+  prepare:
+    cmd: python -m src.data.prepare --config configs/train.yaml
+    deps:
+      - data/raw/train_ver2.csv
+      - src/data/prepare.py
+      - configs/train.yaml
+    outs:
+      - data/processed/train.parquet:
+          cache: true
+
+  features:
+    cmd: python -m src.features.build --config configs/train.yaml
+    deps:
+      - data/processed/train.parquet
+      - src/features/build.py
+      - configs/train.yaml
+    outs:
+      - data/processed/features.parquet:
+          cache: true
+
+  train:
+    cmd: python -m src.models.train --config configs/train.yaml
+    deps:
+      - data/processed/features.parquet
+      - src/models/train.py
+      - configs/train.yaml
+    outs:
+      - models/model.bin:
+          cache: true
+    metrics:
+      - models/metrics.json:
+          cache: false

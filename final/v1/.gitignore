@@ -1,0 +1,129 @@
+# Скомпилированные / оптимизированные файлы Python и DLL
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C-расширения
+*.so
+
+# Сборка и упаковка дистрибутива
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Логи установщиков
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Отчёты тестов / покрытия
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+*.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Переводы
+*.mo
+*.pot
+
+# Django / Flask / локальные файлы
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Виртуальные окружения и секреты доступов
+.env
+.env.local
+.env.*.local
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE / ОС
+.idea/
+.vscode/
+.DS_Store
+old/
+
+# --- Требования проекта / курса ---
+# Крупные данные не должны попадать в репозиторий
+*.csv
+*.csv.zip
+*.zip
+*.parquet
+*.feather
+*.h5
+*.hdf5
+
+# Бинарники моделей и локальные артефакты (при необходимости — через DVC)
+*.bin
+*.pkl
+*.pickle
+*.joblib
+*.onnx
+models/*
+!models/.gitkeep
+!models/README.md
+
+# Локальный трекинг / артефакты MLflow
+mlruns/
+mlruns_server/
+mlartifacts/
+mlflow.db
+
+# DVC
+.dvc/cache
+.dvc/tmp
+
+# Дампы мониторинга / runtime
+prometheus_data/
+grafana_data/
+
+# Сохраняем структуру data/; полезные нагрузки игнорируются расширениями выше.
+# Также игнорируем сторонние дампы и вспомогательные файлы под data/
+data/*
+!data/.gitkeep
+!data/README.md
+!data/raw/
+!data/processed/
+!data/serving/
+data/raw/*
+data/processed/*
+data/serving/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/serving/.gitkeep
+!data/serving/README.md

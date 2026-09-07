@@ -1,0 +1,65 @@
+"""Общие константы банковского рекомендателя."""
+
+from __future__ import annotations
+
+ID_COL = "ncodpers"
+DATE_COL = "fecha_dato"
+
+PRODUCT_COLS = [
+    "ind_ahor_fin_ult1",
+    "ind_aval_fin_ult1",
+    "ind_cco_fin_ult1",
+    "ind_cder_fin_ult1",
+    "ind_cno_fin_ult1",
+    "ind_ctju_fin_ult1",
+    "ind_ctma_fin_ult1",
+    "ind_ctop_fin_ult1",
+    "ind_ctpp_fin_ult1",
+    "ind_deco_fin_ult1",
+    "ind_deme_fin_ult1",
+    "ind_dela_fin_ult1",
+    "ind_ecue_fin_ult1",
+    "ind_fond_fin_ult1",
+    "ind_hip_fin_ult1",
+    "ind_plan_fin_ult1",
+    "ind_pres_fin_ult1",
+    "ind_reca_fin_ult1",
+    "ind_tjcr_fin_ult1",
+    "ind_valo_fin_ult1",
+    "ind_viv_fin_ult1",
+    "ind_nomina_ult1",
+    "ind_nom_pens_ult1",
+    "ind_recibo_ult1",
+]
+
+PROFILE_COLS = [
+    "sexo",
+    "age",
+    "ind_nuevo",
+    "antiguedad",
+    "indrel",
+    "indrel_1mes",
+    "tiprel_1mes",
+    "indresi",
+    "indext",
+    "canal_entrada",
+    "indfall",
+    "cod_prov",
+    "nomprov",
+    "ind_actividad_cliente",
+    "renta",
+    "segmento",
+]
+
+# Категории, которые кодируем частотой / кодами
+CATEGORICAL_COLS = [
+    "sexo",
+    "indrel_1mes",
+    "tiprel_1mes",
+    "indresi",
+    "indext",
+    "canal_entrada",
+    "indfall",
+    "nomprov",
+    "segmento",
+]

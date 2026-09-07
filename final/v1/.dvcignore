@@ -1,0 +1,11 @@
+# Игнорируем крупные/локальные артефакты вне outs DVC
+data/raw/**
+!data/raw/.gitkeep
+mlruns/
+mlartifacts/
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
