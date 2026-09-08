@@ -35,6 +35,16 @@ python -m src.models.train --config configs/train.yaml --skip-mlflow
 | Popularity baseline | 0.02072 | — | — |
 | v6 hybrid + 100k | 0.02553 | +23.2% | база 100k |
 | **v7 + early stopping** | **0.02566** | **+23.8%** | **current** (+0.51% к v6) |
+| bayes shrink m=100 | 0.02566 | +23.8% | ≈ v7, не берём |
+| time weights hl=3 | 0.02556 | +23.3% | хуже v7 (−0.39%) |
+| v8 bayes shrink m=100 | 0.02566 | +23.8% | ≈v7; не берём |
+
+**Блок C — контроль user-split** (другие valid-строки; сравнивать lift, не абсолютный MAP с B):
+
+| Модель | MAP@7 | vs baseline | Статус |
+|--------|------:|------------:|--------|
+| Popularity (user valid) | 0.02265 | — | — |
+| user-split = v7 settings | 0.02770 | +22.3% | контроль; прод = time v7 |
 
 
 ---
@@ -493,8 +503,129 @@ Early stopping **оставляем**: новый лучший = **v7**. Кон�
 
 ---
 
+## Эксперимент 7: сплит по пользователям (контроль к time-split)
+
+Параллельный пайплайн — **не** заменяет time-based prepare/train.
+
+| | |
+|--|--|
+| Run | `bank-rec-train-user-split-001` |
+| Config | [`configs/train_user_split.yaml`](configs/train_user_split.yaml) |
+| Prepare | `python -m src.data.prepare_user_split --config configs/train_user_split.yaml` |
+| Данные | `data/processed/datasets_user_split/` |
+| Артефакты | [`metrics_user_split.json`](models/metrics_user_split.json), [`model_user_split.bin`](models/model_user_split.bin), [`metrics_compare_user_split.json`](models/metrics_compare_user_split.json) |
+
+### Идея
+
+Те же настройки модели, что у **v7** (hybrid min_pos=100, early stopping, сэмпл 100k/133k на месяц). Отличие только в разбиении:
+
+- **time (v7):** train ≤2015-12, valid 2016-01…04;
+- **user:** месяцы 2015-01…2016-04 в обоих фолдах; клиенты (`ncodpers`) 80/20 без пересечения.
+
+Ограничение: на user-split модель видит «будущие» месяцы у train-клиентов → возможен leakage временных паттернов. Это контроль, не продакшен-валидация.
+
+### Команды
+
+```bash
+python -m src.data.prepare_user_split --config configs/train_user_split.yaml
+python -m src.features.build --config configs/train_user_split.yaml
+python -m src.models.train --config configs/train_user_split.yaml --skip-mlflow
+```
+
+### Результаты
+
+| | split | n_train | n_valid | baseline MAP@7 | model MAP@7 | lift |
+|--|-------|--------:|--------:|---------------:|------------:|-----:|
+| **v7 time** | время | 1.2M | 533k | 0.02072 | **0.02566** | **+23.8%** |
+| user-split | клиенты | 1.6M | 2.09M | 0.02265 | 0.02770 | +22.3% |
+
+### Вывод
+
+- Абсолютный MAP@7 на user-split выше, но **valid другой** (все месяцы + hold-out клиенты) — с time-v7 напрямую не сравнивать.
+- Lift над popularity **сопоставим** и даже чуть ниже (+22.3% vs +23.8%) → модель не «раздута» только за счёт user-split.
+- Основной критерий и прод-модель остаются **time-based v7** (`models/model.bin`). User-split артефакты лежат отдельно.
+
+---
+
+## Эксперимент 8: Beta–Binomial shrink к popularity
+
+| | |
+|--|--|
+| Run | `bank-rec-train-008-bayes-shrink` |
+| Config | [`configs/train_bayes_shrink.yaml`](configs/train_bayes_shrink.yaml) |
+| Артефакты | [`metrics_bayes_shrink.json`](models/metrics_bayes_shrink.json), [`model_bayes_shrink.bin`](models/model_bayes_shrink.bin), [`metrics_compare_bayes_shrink.json`](models/metrics_compare_bayes_shrink.json) |
+
+### Идея
+
+Вместо жёсткого skip редких (`min_pos=100` → popularity) учим почти всё (`min_pos=1`) и на инференсе тянем скор к popularity:
+
+```text
+p = (n_pos · p̂ + m · pop) / (n_pos + m),   m = prior_strength = 100
+```
+
+- `n_pos ≪ m` → почти popularity (хвост не «кричит»);
+- `n_pos ≫ m` → почти сырой LightGBM.
+
+Данные / seed / ES / гиперпараметры — как у **v7** (тот же time-split сэмпл).
+
+### Результаты
+
+| | MAP@7 | lift | skip |
+|--|------:|-----:|-----:|
+| **v7 hybrid** | **0.02566** | +23.8% | 9 |
+| bayes m=100 | 0.02566 | +23.8% | 1 (`ahor`) |
+
+delta MAP@7 vs v7: **+0.000002 (~0%)**. P@7/R@7 чуть выше за счёт слабого сигнала хвоста, на MAP не видно.
+
+У редких AUC на valid часто ≪ 0.5 (`ctju` 0.14, `plan` 0.27, `hip` 0.35) — без shrink они портили бы top-7; с `m=100` их вклад почти как popularity.
+
+### Вывод
+
+Bayes-shrink **не улучшает** MAP@7 относительно hybrid. По сути дублирует skip при `m≈100`. В прод оставляем **v7** (проще и прозрачнее). Код shrink в `train.py` / `serve.py` сохранён для повторных опытов (`prior_strength` 50/200).
+
+---
+
+## Эксперимент 9: экспоненциальные веса по времени
+
+| | |
+|--|--|
+| Run | `bank-rec-train-009-time-weights` |
+| Config | [`configs/train_time_weights.yaml`](configs/train_time_weights.yaml) |
+| Артефакты | [`metrics_time_weights.json`](models/metrics_time_weights.json), [`model_time_weights.bin`](models/model_time_weights.bin), [`metrics_compare_time_weights.json`](models/metrics_compare_time_weights.json) |
+
+### Идея
+
+Свежие месяцы train важнее старых. Для каждой строки:
+
+```text
+w = 2 ** (−age_months / half_life),   half_life = 3, anchor = 2015-12-28
+```
+
+| Месяц | вес |
+|-------|----:|
+| 2015-01 | 0.079 |
+| 2015-06 | 0.25 |
+| 2015-09 | 0.50 |
+| 2015-12 | 1.00 |
+
+Передаётся в LightGBM как `sample_weight`. Остальное = **v7** (hybrid 100, ES, тот же сэмпл).
+
+### Результаты
+
+| | MAP@7 | lift vs baseline | vs v7 |
+|--|------:|-----------------:|------:|
+| **v7** (равные веса) | **0.02566** | +23.8% | — |
+| time weights hl=3 | 0.02556 | +23.3% | **−0.39%** |
+
+### Вывод
+
+Экспоненциальные веса **чуть ухудшили** MAP@7. Либо дрейф 2015→2016 слабый на этом сэмпле, либо `half_life=3` слишком режет ранние месяцы (январь ~8% веса). В прод **не** берём; код/`time_weights` в конфиге оставлены для `half_life=6` или якоря на первый valid-месяц.
+
+---
+
 ## Что пробовать следующим (один пункт за раз)
 
 1. Порог hybrid `min_positives=50` или `200` — один контрольный прогон.
 2. Узкие лаги (`n_opened_lag1` / `delta_n_products`) поверх v7.
-3. Переход к сервису `/recommend` и фиксации README §4–5.
+3. (опц.) Time weights с `half_life=6` (мягче) — один прогон.
+4. (опц.) Bayes `m=50` — чуть больше веса хвосту.

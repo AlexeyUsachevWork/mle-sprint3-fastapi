@@ -1,0 +1,51 @@
+# Параллельный эксперимент: сплит train/valid по пользователям (ncodpers), не по времени.
+# Модельные настройки = v7 (time-based), чтобы сравнение было fair.
+random_seed: 42
+
+data:
+  raw_path: data/raw/train_ver2.csv
+  processed_dir: data/processed
+  datasets_dir: datasets_user_split
+  target_prefix: ind_
+  target_suffix: _ult1
+  chunksize: 400000
+  # Те же лимиты сэмпла, что у v7
+  clients_per_month_train: 100000
+  clients_per_month_valid: 133333
+
+split:
+  mode: user
+  # Окно месяцев для обеих выборок (без временного барьера)
+  months_start: "2015-01-28"
+  months_end: "2016-04-28"
+  valid_user_frac: 0.2
+
+features:
+  portfolio_lags: []
+
+model:
+  type: lightgbm
+  params:
+    n_estimators: 300
+    learning_rate: 0.05
+    num_leaves: 63
+    subsample: 0.8
+    colsample_bytree: 0.8
+  top_k: 7
+  use_scale_pos_weight: false
+  scale_pos_weight_mode: sqrt
+  scale_pos_weight_cap: 50
+  min_positives_train: 100
+  early_stopping:
+    enabled: true
+    holdout_months: 1
+    patience: 20
+
+mlflow:
+  experiment_name: bank-product-recommender
+  tracking_uri: http://127.0.0.1:5000
+  train_run_name: bank-rec-train-user-split-001
+
+paths:
+  model_path: models/model_user_split.bin
+  metrics_path: models/metrics_user_split.json

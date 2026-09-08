@@ -50,12 +50,20 @@ Python, pandas, scikit-learn / LightGBM, MLflow, DVC, FastAPI, Docker Compose, P
 ## Данные
 Датасет **не хранится в git**. См. [`data/README.md`](data/README.md).
 
+Источник: https://disk.yandex.com/d/Io0siOESo2RAaA.  
 Ожидаемый файл: `data/raw/train_ver2.csv`.
+
+Скачать скриптом (Git Bash / WSL / Linux):
+```bash
+bash scripts/download_dataset.sh
+```
+Перезаписать, если файл уже есть: `FORCE=1 bash scripts/download_dataset.sh`.  
+Нужны `curl` и `python`. Скрипт берёт прямую ссылку через API Яндекс.Диска, кладёт CSV в `data/raw/` (из zip извлекает `train_ver2.csv`).
 
 ## Быстрый старт
 
 ```bash
-git clone <ссылка-на-репозиторий>
+git clone https://github.com/AlexeyUsachevWork/mle-pr-final.git
 cd mle-pr-final
 python -m venv .venv
 
@@ -67,7 +75,13 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Положить данные в `data/raw/` (см. `data/README.md`).
+Положить данные в `data/raw/`:
+
+```bash
+bash scripts/download_dataset.sh
+```
+
+Подробности — в `data/README.md`.
 
 Скопировать доступы к PostgreSQL и S3:
 
@@ -76,47 +90,59 @@ copy .env.example .env.local
 # заполните значениями курса (как в спринте 2)
 ```
 
-### Инфраструктура обучения (MLflow)
+### Docker: компоненты системы
 
-Основной способ (как в курсе: PostgreSQL + S3):
+Каждый элемент — **отдельный контейнер** в `docker-compose.yml`:
 
-```bash
-# Windows
-python scripts/start_mlflow.py
+| Сервис Compose | Контейнер | Порт | Назначение |
+|----------------|-----------|------|------------|
+| `mlflow` | `bank-rec-mlflow` | 5000 | Tracking UI / логирование экспериментов |
+| `api` | `bank-rec-api` | 8000 | FastAPI: `/recommend`, `/health`, `/metrics`, `/docs` |
+| `prometheus` | `bank-rec-prometheus` | 9090 | scrape метрик API |
+| `grafana` | `bank-rec-grafana` | 3000 | дашборд (логин `admin` / `GRAFANA_PASSWORD`) |
 
-# Git Bash / WSL / Linux VM
-bash scripts/start_mlflow.sh
-
-# UI: http://127.0.0.1:5000
-```
-
-Локальный упрощённый вариант без облака (SQLite в Docker):
+Перед API нужны артефакты на хосте (монтируются в контейнер, см. `.env.example`):
 
 ```bash
-docker compose up -d mlflow
+# модель после обучения → models/model.bin
+python -m scripts.export_serving_features   # → data/serving/clients_features.parquet
 ```
 
-### Сервис рекомендаций
-
-1. Экспорт features store (lookup по `ncodpers`):
+#### Отдельные сервисы
 
 ```bash
-python -m scripts.export_serving_features
+# MLflow (profile mlflow)
+docker compose --profile mlflow up -d mlflow
+
+# API (сборка образа)
+docker compose up -d --build api
+
+# мониторинг
+docker compose up -d prometheus
+docker compose up -d grafana
 ```
 
-2. Запуск API + Prometheus в Docker (модель и данные — bind-mount с хоста):
+Остановка одного сервиса: `docker compose stop api` (аналогично `mlflow` / `prometheus` / `grafana`).
+
+#### Весь ансамбль
+
+Serving-стек (API + Prometheus + Grafana):
 
 ```bash
-# Linux / Git Bash
-bash scripts/start_service.sh
-
-# Windows PowerShell
-./scripts/start_service.ps1
+docker compose up -d --build api prometheus grafana
+# или обёртки: bash scripts/start_service.sh  |  ./scripts/start_service.ps1
 ```
 
-API: http://localhost:8000/docs · Prometheus: http://localhost:9090 · Grafana: http://localhost:3000 (`admin` / `GRAFANA_PASSWORD`)
+Всё сразу, включая MLflow:
 
-Внешние каталоги задаются в `.env.local` (`HOST_MODELS_DIR`, `HOST_SERVING_DATA_DIR`, …) — см. `.env.example`.
+```bash
+docker compose --profile mlflow up -d --build
+```
+
+UI после старта:  
+API http://localhost:8000/docs · Prometheus http://localhost:9090 · Grafana http://localhost:3000 · MLflow http://localhost:5000
+
+Каталоги bind-mount: `HOST_MODELS_DIR`, `HOST_SERVING_DATA_DIR`, `HOST_CONFIGS_DIR`, `HOST_MONITORING_DIR` — см. `.env.example`.
 
 ## Руководство по проекту
 
@@ -391,7 +417,7 @@ curl -s -X POST http://localhost:8000/recommend \
 
 #### Запуск
 
-Скрипты упаковывают весь старт сервера (требование task.md — `.sh` с запуском и настройкой):
+Скрипты упаковывают весь старт сервера:
 
 ```bash
 # предпочтительно на Windows
@@ -405,8 +431,7 @@ bash scripts/start_mlflow.sh
 
 1. Читают `.env.local` (если нет — `.env`).
 2. Проверяют наличие обязательных переменных.
-3. Собирают `backend-store-uri` / `registry-store-uri` вида  
-   `postgresql://USER:PASSWORD@HOST:PORT/DB?sslmode=require`.
+3. Собирают `backend-store-uri` / `registry-store-uri` вида `postgresql://USER:PASSWORD@HOST:PORT/DB?sslmode=require`.
 4. Задают `default-artifact-root=s3://S3_BUCKET_NAME` и `MLFLOW_S3_ENDPOINT_URL`.
 5. Стартуют `mlflow server` на `0.0.0.0:5000` с флагом `--no-serve-artifacts` (артефакты читаются/пишутся напрямую в S3).
 
@@ -579,13 +604,15 @@ Time-split: train t = янв–дек 2015, valid t = янв–апр 2016.
 
 #### 5.1. Что поднимается
 
-| Сервис | Порт | Назначение |
-|--------|------|------------|
-| `bank-rec-api` | 8000 | FastAPI: `POST /recommend`, `/health`, `/metrics`, `/docs` |
-| `bank-rec-prometheus` | 9090 | scrape метрик API |
-| `bank-rec-grafana` | 3000 | дашборд (datasource Prometheus, provisioning) |
+Каждый элемент — отдельный Docker-контейнер (`docker-compose.yml`):
 
-Модель и признаки **не** копируются в образ: монтируются с хоста (как в sprint‑3/4 — артефакты снаружи контейнера).
+| Сервис Compose | Контейнер | Порт | Назначение |
+|----------------|-----------|------|------------|
+| `api` | `bank-rec-api` | 8000 | FastAPI: `POST /recommend`, `/health`, `/metrics`, `/docs` |
+| `prometheus` | `bank-rec-prometheus` | 9090 | scrape метрик API |
+| `grafana` | `bank-rec-grafana` | 3000 | дашборд (datasource Prometheus, provisioning) |
+| `mlflow` | `bank-rec-mlflow` | 5000 | Tracking (profile `mlflow`, SQLite) |
+
 
 | Host (переменная) | В контейнере |
 |-------------------|--------------|
@@ -607,10 +634,26 @@ python -m scripts.export_serving_features
 
 #### 5.3. Запуск
 
+Отдельно:
+
 ```bash
-bash scripts/start_service.sh
-# или: ./scripts/start_service.ps1
-# или: docker compose up -d --build api prometheus grafana
+docker compose --profile mlflow up -d mlflow
+docker compose up -d --build api
+docker compose up -d prometheus
+docker compose up -d grafana
+```
+
+Ансамбль serving (API + Prometheus + Grafana):
+
+```bash
+docker compose up -d --build api prometheus grafana
+# обёртки: bash scripts/start_service.sh  |  ./scripts/start_service.ps1
+```
+
+Весь стек вместе с MLflow:
+
+```bash
+docker compose --profile mlflow up -d --build
 ```
 
 Проверка:
@@ -631,9 +674,6 @@ curl -s -X POST http://127.0.0.1:8000/recommend \
 - `GET /metrics` — Prometheus textformat из кода сервиса  
 - Prometheus UI: http://127.0.0.1:9090  
 - Grafana: http://127.0.0.1:3000 — datasource и дашборд **Bank Product Recommender API** поднимаются из `monitoring/grafana/` (логин `admin` / `GRAFANA_PASSWORD`)
-
-Из sprint‑3: latency histogram, error counters, Grafana+Prometheus.  
-Из sprint‑4: lifespan-загрузка артефактов, cold-path (клиент не найден).
 
 #### 5.5. Локально без Docker
 
