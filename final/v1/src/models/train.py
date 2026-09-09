@@ -69,6 +69,25 @@ def popularity_baseline_scores(train: pd.DataFrame) -> dict[str, float]:
     return scores
 
 
+def bayes_shrink_scores(
+    p_hat: np.ndarray,
+    pop: float,
+    n_pos: int,
+    prior_strength: float,
+) -> np.ndarray:
+    """Beta–Binomial shrink к popularity: p = (n_pos·p̂ + m·pop) / (n_pos + m).
+
+    При n_pos=0 или m→∞ → pop; при n_pos ≫ m → p̂.
+    """
+    m = float(prior_strength)
+    n = float(max(int(n_pos), 0))
+    if m <= 0:
+        return p_hat.astype(np.float32, copy=False)
+    if n <= 0:
+        return np.full_like(p_hat, float(pop), dtype=np.float32)
+    return ((n * p_hat + m * float(pop)) / (n + m)).astype(np.float32)
+
+
 def rank_from_score_dict(
     df: pd.DataFrame,
     score_lookup: dict[str, float] | None,
@@ -145,6 +164,37 @@ def _scale_pos_weight(
     return float(min(spw, cap))
 
 
+def exponential_time_weights(
+    dates: pd.Series,
+    half_life_months: float,
+    anchor: str | None = None,
+) -> np.ndarray:
+    """Веса строк: экспоненциально растут к свежим месяцам.
+
+    w = 2 ** (-age_months / half_life), age = число месяцев до якоря
+    (последний месяц в dates или явный anchor, напр. train_end).
+    Самый свежий месяц → вес 1.0.
+    """
+    d = dates.astype("string").str.slice(0, 10)
+    months = sorted(d.unique().tolist())
+    if not months:
+        return np.ones(len(dates), dtype=np.float32)
+    anchor_m = str(anchor) if anchor else months[-1]
+    if anchor_m not in months:
+        # якорь позже всех train-месяцев — считаем age от последнего train
+        months_for_idx = months + ([anchor_m] if anchor_m > months[-1] else [])
+        if anchor_m not in months_for_idx:
+            months_for_idx = sorted(set(months) | {anchor_m})
+    else:
+        months_for_idx = months
+    idx = {m: i for i, m in enumerate(months_for_idx)}
+    anchor_i = idx.get(anchor_m, len(months) - 1)
+    hl = max(float(half_life_months), 1e-6)
+    age = d.map(lambda m: float(anchor_i - idx.get(m, anchor_i))).to_numpy(dtype=np.float64)
+    age = np.clip(age, 0.0, None)
+    return np.power(2.0, -age / hl).astype(np.float32)
+
+
 def train_lgbm_models(
     train: pd.DataFrame,
     valid: pd.DataFrame,
@@ -158,13 +208,22 @@ def train_lgbm_models(
     early_stopping: bool = False,
     es_holdout_months: int = 1,
     es_patience: int = 20,
-) -> tuple[dict[str, lgb.LGBMClassifier], dict[str, float], list[str], dict[str, int | None]]:
+    time_weights: np.ndarray | None = None,
+) -> tuple[
+    dict[str, lgb.LGBMClassifier],
+    dict[str, float],
+    list[str],
+    dict[str, int | None],
+    dict[str, int],
+]:
     models: dict[str, lgb.LGBMClassifier] = {}
     aucs: dict[str, float] = {}
     skipped: list[str] = []
     best_iters: dict[str, int | None] = {}
+    train_positives: dict[str, int] = {}
     x_all = _feature_matrix(train, feat_cols)
     x_valid = _feature_matrix(valid, feat_cols)
+    w_all = time_weights if time_weights is not None else np.ones(len(train), dtype=np.float32)
 
     fit_time_mask, es_time_mask, es_months = _time_holdout_masks(
         train, es_holdout_months if early_stopping else 0
@@ -192,6 +251,7 @@ def train_lgbm_models(
         va_mask = valid[hcol].to_numpy() == 0 if hcol in valid.columns else np.ones(len(valid), bool)
         y_eligible = train.loc[eligible, tcol].to_numpy()
         n_pos = int(y_eligible.sum())
+        train_positives[p] = n_pos
         if n_pos < min_pos:
             models[p] = None  # type: ignore[assignment]
             aucs[p] = float("nan")
@@ -205,7 +265,9 @@ def train_lgbm_models(
         y_fit = train.loc[fit_mask, tcol].to_numpy()
         y_va = valid.loc[va_mask, tcol].to_numpy()
 
-        use_es = bool(early_stopping and es_mask.any() and int(y_fit.sum()) >= min_pos)
+        # ES только если в fit достаточно позитивов (не раздуваем редкие деревьями)
+        es_min_pos = max(min_pos, 20)
+        use_es = bool(early_stopping and es_mask.any() and int(y_fit.sum()) >= es_min_pos)
         if early_stopping and not use_es:
             fit_mask = eligible
             y_fit = y_eligible
@@ -219,12 +281,14 @@ def train_lgbm_models(
         else:
             spw = None
 
+        w_fit = w_all[fit_mask]
         model = lgb.LGBMClassifier(**product_params)
         if use_es:
             y_es = train.loc[es_mask, tcol].to_numpy()
             model.fit(
                 x_all[fit_mask],
                 y_fit,
+                sample_weight=w_fit,
                 eval_set=[(x_all[es_mask], y_es)],
                 eval_metric="binary_logloss",
                 callbacks=[
@@ -235,7 +299,7 @@ def train_lgbm_models(
             best_iter = int(getattr(model, "best_iteration_", 0) or 0)
             best_iters[p] = best_iter if best_iter > 0 else None
         else:
-            model.fit(x_all[fit_mask], y_fit)
+            model.fit(x_all[fit_mask], y_fit, sample_weight=w_fit)
             best_iters[p] = None
 
         proba = model.predict_proba(x_valid[va_mask])[:, 1]
@@ -251,7 +315,7 @@ def train_lgbm_models(
         else:
             print(f"  {p}: pos_train={n_pos}, auc=nan{spw_txt}{es_txt}")
 
-    return models, aucs, skipped, best_iters
+    return models, aucs, skipped, best_iters, train_positives
 
 
 
@@ -260,16 +324,25 @@ def predict_scores(
     df: pd.DataFrame,
     feat_cols: list[str],
     popularity: dict[str, float],
+    train_positives: dict[str, int] | None = None,
+    bayes_prior: float | None = None,
 ) -> np.ndarray:
     x = _feature_matrix(df, feat_cols)
     n = len(df)
     scores = np.zeros((n, len(PRODUCT_COLS)), dtype=np.float32)
+    pos_map = train_positives or {}
+    use_shrink = bayes_prior is not None and float(bayes_prior) > 0
     for j, p in enumerate(PRODUCT_COLS):
+        pop = float(popularity.get(p, 0.0))
         model = models.get(p)
         if model is None:
-            scores[:, j] = popularity.get(p, 0.0)
+            scores[:, j] = pop
+            continue
+        p_hat = model.predict_proba(x)[:, 1]
+        if use_shrink:
+            scores[:, j] = bayes_shrink_scores(p_hat, pop, int(pos_map.get(p, 0)), float(bayes_prior))
         else:
-            scores[:, j] = model.predict_proba(x)[:, 1]
+            scores[:, j] = p_hat
     return scores
 
 
@@ -303,11 +376,19 @@ def main() -> None:
     use_es = bool(es_cfg.get("enabled", False))
     es_holdout = int(es_cfg.get("holdout_months", 1))
     es_patience = int(es_cfg.get("patience", 20))
+    bayes_cfg = model_cfg.get("bayes_shrink") or {}
+    use_bayes = bool(bayes_cfg.get("enabled", False))
+    bayes_prior = float(bayes_cfg.get("prior_strength", 100.0)) if use_bayes else None
+    tw_cfg = model_cfg.get("time_weights") or {}
+    use_tw = bool(tw_cfg.get("enabled", False))
+    tw_half_life = float(tw_cfg.get("half_life_months", 3.0))
+    tw_anchor = tw_cfg.get("anchor") or (cfg.get("split") or {}).get("train_end")
     paths = cfg.get("paths") or {}
     mlflow_cfg = cfg.get("mlflow") or {}
 
-    processed = ROOT_DIR / (cfg.get("data") or {}).get("processed_dir", "data/processed")
-    ds = processed / "datasets"
+    data_cfg = cfg.get("data") or {}
+    processed = ROOT_DIR / data_cfg.get("processed_dir", "data/processed")
+    ds = processed / data_cfg.get("datasets_dir", "datasets")
     train = pd.read_parquet(ds / "train_features.parquet")
     valid = pd.read_parquet(ds / "valid_features.parquet")
     bundle = joblib.load(ds / "category_maps.joblib")
@@ -326,11 +407,28 @@ def main() -> None:
     baseline_metrics = evaluate_ranking(true_va, baseline_preds, top_k)
     print("Baseline:", baseline_metrics)
 
+    sample_w: np.ndarray | None = None
+    if use_tw:
+        sample_w = exponential_time_weights(train[DATE_COL], tw_half_life, anchor=tw_anchor)
+        # сводка весов по месяцам
+        months = train[DATE_COL].astype("string").str.slice(0, 10)
+        by_m = (
+            pd.DataFrame({"m": months, "w": sample_w})
+            .groupby("m", sort=True)["w"]
+            .first()
+        )
+        print(
+            f"  time_weights: half_life={tw_half_life}, anchor={tw_anchor}, "
+            f"w_min={float(sample_w.min()):.4f}, w_max={float(sample_w.max()):.4f}"
+        )
+        print("  weights by month:", {k: round(float(v), 4) for k, v in by_m.items()})
+
     print(
         f"LightGBM per product (scale_pos_weight={use_spw}, mode={spw_mode}, "
-        f"cap={spw_cap}, min_positives={min_pos}, early_stopping={use_es})…"
+        f"cap={spw_cap}, min_positives={min_pos}, early_stopping={use_es}, "
+        f"bayes_shrink={use_bayes}, prior={bayes_prior}, time_weights={use_tw})…"
     )
-    models, aucs, skipped, best_iters = train_lgbm_models(
+    models, aucs, skipped, best_iters, train_positives = train_lgbm_models(
         train,
         valid,
         feat_cols,
@@ -343,9 +441,17 @@ def main() -> None:
         early_stopping=use_es,
         es_holdout_months=es_holdout,
         es_patience=es_patience,
+        time_weights=sample_w,
     )
     print(f"Skipped → popularity ({len(skipped)}): {skipped}")
-    model_scores = predict_scores(models, valid, feat_cols, popularity)
+    model_scores = predict_scores(
+        models,
+        valid,
+        feat_cols,
+        popularity,
+        train_positives=train_positives,
+        bayes_prior=bayes_prior,
+    )
     model_preds = rank_fast(owned_va, model_scores, PRODUCT_COLS, top_k)
     model_metrics = evaluate_ranking(true_va, model_preds, top_k)
     print("LightGBM:", model_metrics)
@@ -356,6 +462,7 @@ def main() -> None:
         "feature_columns": feat_cols,
         "models": models,
         "popularity": popularity,
+        "train_positives": train_positives,
         "category_maps": bundle["maps"],
         "top_k": top_k,
         "metrics": model_metrics,
@@ -369,6 +476,15 @@ def main() -> None:
         "scale_pos_weight_cap": spw_cap,
         "scale_pos_weight_mode": spw_mode,
         "min_positives_train": min_pos,
+        "bayes_shrink": {
+            "enabled": use_bayes,
+            "prior_strength": bayes_prior if use_bayes else None,
+        },
+        "time_weights": {
+            "enabled": use_tw,
+            "half_life_months": tw_half_life if use_tw else None,
+            "anchor": tw_anchor if use_tw else None,
+        },
         "early_stopping": {
             "enabled": use_es,
             "holdout_months": es_holdout,
@@ -387,6 +503,7 @@ def main() -> None:
         "product_aucs": {k: (None if v != v else v) for k, v in aucs.items()},
         "skipped_products": skipped,
         "best_iterations": best_iters,
+        "train_positives": train_positives,
         "top_k": top_k,
         "n_train": int(len(train)),
         "n_valid": int(len(valid)),
@@ -395,6 +512,15 @@ def main() -> None:
         "scale_pos_weight_cap": spw_cap,
         "scale_pos_weight_mode": spw_mode,
         "min_positives_train": min_pos,
+        "bayes_shrink": {
+            "enabled": use_bayes,
+            "prior_strength": bayes_prior if use_bayes else None,
+        },
+        "time_weights": {
+            "enabled": use_tw,
+            "half_life_months": tw_half_life if use_tw else None,
+            "anchor": tw_anchor if use_tw else None,
+        },
         "early_stopping": {
             "enabled": use_es,
             "holdout_months": es_holdout,
@@ -445,6 +571,8 @@ def main() -> None:
                 "early_stopping": use_es,
                 "es_holdout_months": es_holdout,
                 "es_patience": es_patience,
+                "bayes_shrink": use_bayes,
+                "bayes_prior_strength": bayes_prior if use_bayes else 0,
             }
         )
         for prefix, metrics in ("baseline", baseline_metrics), ("model", model_metrics):

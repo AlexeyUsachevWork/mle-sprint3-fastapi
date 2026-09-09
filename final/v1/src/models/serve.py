@@ -30,22 +30,46 @@ def _owned_matrix(df: pd.DataFrame, products: list[str]) -> np.ndarray:
     return np.vstack(mats).T
 
 
+def _bayes_shrink_scores(
+    p_hat: np.ndarray,
+    pop: float,
+    n_pos: int,
+    prior_strength: float,
+) -> np.ndarray:
+    m = float(prior_strength)
+    n = float(max(int(n_pos), 0))
+    if m <= 0:
+        return p_hat.astype(np.float32, copy=False)
+    if n <= 0:
+        return np.full_like(p_hat, float(pop), dtype=np.float32)
+    return ((n * p_hat + m * float(pop)) / (n + m)).astype(np.float32)
+
+
 def _predict_scores(
     models: dict,
     df: pd.DataFrame,
     feat_cols: list[str],
     popularity: dict[str, float],
     products: list[str],
+    train_positives: dict[str, int] | None = None,
+    bayes_prior: float | None = None,
 ) -> np.ndarray:
     x = _feature_matrix(df, feat_cols)
     n = len(df)
     scores = np.zeros((n, len(products)), dtype=np.float32)
+    pos_map = train_positives or {}
+    use_shrink = bayes_prior is not None and float(bayes_prior) > 0
     for j, p in enumerate(products):
+        pop = float(popularity.get(p, 0.0))
         model = models.get(p)
         if model is None:
-            scores[:, j] = float(popularity.get(p, 0.0))
+            scores[:, j] = pop
+            continue
+        p_hat = model.predict_proba(x)[:, 1]
+        if use_shrink:
+            scores[:, j] = _bayes_shrink_scores(p_hat, pop, int(pos_map.get(p, 0)), float(bayes_prior))
         else:
-            scores[:, j] = model.predict_proba(x)[:, 1]
+            scores[:, j] = p_hat
     return scores
 
 
@@ -128,8 +152,21 @@ class RecommenderEngine:
         feat_cols = self.artifact["feature_columns"]
         models = self.artifact["models"]
         popularity = self.artifact["popularity"]
+        train_positives = self.artifact.get("train_positives") or {}
+        bayes_cfg = self.artifact.get("bayes_shrink") or {}
+        bayes_prior = None
+        if bayes_cfg.get("enabled") and bayes_cfg.get("prior_strength") is not None:
+            bayes_prior = float(bayes_cfg["prior_strength"])
 
-        scores = _predict_scores(models, row, feat_cols, popularity, products)
+        scores = _predict_scores(
+            models,
+            row,
+            feat_cols,
+            popularity,
+            products,
+            train_positives=train_positives,
+            bayes_prior=bayes_prior,
+        )
         owned = _owned_matrix(row, products)
         ranked = _rank_fast(owned, scores, products, k)
         score_map = {products[j]: float(scores[0, j]) for j in range(len(products))}

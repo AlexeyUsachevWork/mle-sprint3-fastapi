@@ -1,7 +1,5 @@
 # Журнал экспериментов (этап 4)
 
-> Не затирать прошлые записи — **дописывать** новые в конец.
->
 > Сводка: [`models/experiments_registry.json`](models/experiments_registry.json)  
 > Текущий лучший: **v7** (hybrid + 100k + early stopping), MAP@7 = **0.02566** → [`models/model.bin`](models/model.bin)
 

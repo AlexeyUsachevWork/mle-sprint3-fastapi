@@ -204,8 +204,9 @@ def main() -> None:
     args = parser.parse_args()
     cfg = load_config(args.config)
 
-    processed = ROOT_DIR / (cfg.get("data") or {}).get("processed_dir", "data/processed")
-    ds = processed / "datasets"
+    data_cfg = cfg.get("data") or {}
+    processed = ROOT_DIR / data_cfg.get("processed_dir", "data/processed")
+    ds = processed / data_cfg.get("datasets_dir", "datasets")
     slim_dir = processed / "eda" / "months_slim"
     feat_cfg = cfg.get("features") or {}
     lags = [int(x) for x in (feat_cfg.get("portfolio_lags") or [])]

@@ -14,6 +14,18 @@ data/
 
 ## Как положить данные
 
+Автоматически (рекомендуется):
+
+```bash
+bash scripts/download_dataset.sh
+# перезаписать: FORCE=1 bash scripts/download_dataset.sh
+```
+
+Скрипт: [`scripts/download_dataset.sh`](../scripts/download_dataset.sh) — скачивает с  
+https://disk.yandex.com/d/Io0siOESo2RAaA и кладёт `train_ver2.csv` в `data/raw/`.
+
+Вручную:
+
 1. Скачать архив с Яндекс.Диска курса: https://disk.yandex.com/d/Io0siOESo2RAaA
 2. Распаковать `train_ver2.csv` в `data/raw/`
 

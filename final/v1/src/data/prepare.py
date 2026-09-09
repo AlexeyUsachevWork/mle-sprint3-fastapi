@@ -171,7 +171,7 @@ def main() -> None:
     processed = ROOT_DIR / data_cfg.get("processed_dir", "data/processed")
     slim_dir = processed / "eda" / "months_slim"
     profile_dir = processed / "profiles"
-    out_dir = processed / "datasets"
+    out_dir = processed / data_cfg.get("datasets_dir", "datasets")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     chunksize = int(data_cfg.get("chunksize", 400_000))
